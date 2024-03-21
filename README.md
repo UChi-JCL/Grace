@@ -5,7 +5,7 @@
 
 Before using any software or code from this repository, please refer to the LICENSE file for detailed terms and conditions. It is crucial to understand that while the majority of the code in this repository is governed by the Academic Software License © 2023 UChicago
 
-Additionally, please note that the content within these specific subfolders ("dvc", and "error_concealment_interface") did not originate from the authors and may be subject to different terms and conditions, not covered under the provided license. 
+Additionally, please note that the content within the following specific subfolders and files ("baselines/error_concealment", "grace/subnet", and "grace/net.py") did not originate from the authors and may be subject to different terms and conditions, not covered under the provided license. 
 
 ## Install the dependencies
 

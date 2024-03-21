@@ -18,8 +18,8 @@ import shlex
 import cv2
 from copy import deepcopy
 from tqdm import tqdm
-#from dvc.dvc_model import DVCInterface, DVCEntropyCoder
-from dvc.dvc_gpu_interface import DVCInterface
+#from grace.grace_model import GraceInterface, GraceEntropyCoder
+from grace.grace_gpu_interface import GraceInterface
 from torchvision.transforms.functional import to_tensor, to_pil_image
 import torch
 import numpy as np
@@ -47,6 +47,7 @@ IFRAME_INTERVAL = 125
 BLOCKSIZE = 64 
 
 df_psnr = None
+ec_model = None
 
 def init_ec_evaluator() -> Trainer:
     import argparse
@@ -83,7 +84,7 @@ df_psnr = None
 
 def print_usage():
     print(
-        f"Usage: {sys.argv[0]} <video_file> <output file> <mode> [dvc_model]"
+        f"Usage: {sys.argv[0]} <video_file> <output file> <mode> [grace_model]"
         f""
         f"  mode = mpeg | ae"
     )
@@ -231,7 +232,7 @@ def read_video_into_frames(video_path, frame_size = None, nframes=1000):
     for img_name in sorted(image_names)[:nframes]:
         frame = Image.open(os.path.join(frame_path, img_name))
 
-        ''' pad to nearest 64 for DVC model '''
+        ''' pad to nearest 64 for Grace model '''
         padsz = 128
         w, h = frame.size
         pad_w = int(np.ceil(w / padsz) * padsz)
@@ -401,9 +402,9 @@ def set_hw_step(h, w):
     return h // m, w // n
 
 class AEModel:
-    def __init__(self, qmap_coder: QmapModel, dvc_coder: DVCInterface, only_P=True):
+    def __init__(self, qmap_coder: QmapModel, grace_coder: GraceInterface, only_P=True):
         self.qmap_coder = qmap_coder
-        self.dvc_coder = dvc_coder
+        self.grace_coder = grace_coder
 
         self.reference_frame = None
         self.frame_counter = 0
@@ -489,12 +490,12 @@ class AEModel:
                 self.p_index += 1
 
             # encode P part
-            eframe = self.dvc_coder.encode(frame, self.reference_frame)
+            eframe = self.grace_coder.encode(frame, self.reference_frame)
             #eframe.ipart = ipart
             #eframe.isize = isize
             eframe.ipart = None
             eframe.frame_type = "P"
-            return eframe, self.dvc_coder.entropy_encode(eframe) * SIZE_OVERHEAD #+ isize
+            return eframe, self.grace_coder.entropy_encode(eframe) * SIZE_OVERHEAD #+ isize
 
     def decode_frame(self, eframe:EncodedFrame):
         """
@@ -511,8 +512,8 @@ class AEModel:
             return out
         else:
             assert self.reference_frame is not None
-            #out = self.dvc_coder.decode(eframe.code, self.reference_frame, eframe.shapex, eframe.shapey)
-            out = self.dvc_coder.decode(eframe, self.reference_frame)
+            #out = self.grace_coder.decode(eframe.code, self.reference_frame, eframe.shapex, eframe.shapey)
+            out = self.grace_coder.decode(eframe, self.reference_frame)
             if eframe.ipart is not None:
                 ipart = eframe.ipart
                 idec = self.qmap_coder.decode(ipart.code, ipart.shapex, ipart.shapey)
@@ -526,8 +527,8 @@ class AEModel:
         Output:
             list of METRIC_FUNC and list of BPP
         """
-        import dvc.net
-        dvc.net.DEBUG_USE_MPEG = True
+        import grace.net
+        grace.net.DEBUG_USE_MPEG = True
         bpps = []
         psnrs = []
         test_iter = tqdm(frames)
@@ -635,17 +636,17 @@ def init_ae_model(qmap_quality=1):
 
     GRACE_MODEL = "models/grace"
     models = {
-            #"64": AEModel(qmap_coder, DVCInterface({"path": f"{GRACE_MODEL}/64_freeze.model"}, scale_factor=0.25)),
-            #"128": AEModel(qmap_coder, DVCInterface({"path": f"{GRACE_MODEL}/128_freeze.model"}, scale_factor=0.5)),
-            #"256": AEModel(qmap_coder, DVCInterface({"path": f"{GRACE_MODEL}/256_freeze.model"}, scale_factor=0.5)),
-            #"512": AEModel(qmap_coder, DVCInterface({"path": f"{GRACE_MODEL}/512_freeze.model"}, scale_factor=0.5)),
-            #"1024": AEModel(qmap_coder, DVCInterface({"path": f"{GRACE_MODEL}/1024_freeze.model"}, scale_factor=0.5)),
-            "2048": AEModel(qmap_coder, DVCInterface({"path": f"{GRACE_MODEL}/2048_freeze.model"})),
-            #"4096": AEModel(qmap_coder, DVCInterface({"path": f"{GRACE_MODEL}/4096_freeze.model"})),
-            #"6144": AEModel(qmap_coder, DVCInterface({"path": f"{GRACE_MODEL}/6144_freeze.model"})),
-            #"8192": AEModel(qmap_coder, DVCInterface({"path": f"{GRACE_MODEL}/8192_freeze.model"})),
-            #"12288": AEModel(qmap_coder, DVCInterface({"path": f"{GRACE_MODEL}/12288_freeze.model"})),
-            #"16384": AEModel(qmap_coder, DVCInterface({"path": f"{GRACE_MODEL}/16384_freeze.model"})),
+            #"64": AEModel(qmap_coder, GraceInterface({"path": f"{GRACE_MODEL}/64_freeze.model"}, scale_factor=0.25)),
+            #"128": AEModel(qmap_coder, GraceInterface({"path": f"{GRACE_MODEL}/128_freeze.model"}, scale_factor=0.5)),
+            #"256": AEModel(qmap_coder, GraceInterface({"path": f"{GRACE_MODEL}/256_freeze.model"}, scale_factor=0.5)),
+            #"512": AEModel(qmap_coder, GraceInterface({"path": f"{GRACE_MODEL}/512_freeze.model"}, scale_factor=0.5)),
+            #"1024": AEModel(qmap_coder, GraceInterface({"path": f"{GRACE_MODEL}/1024_freeze.model"}, scale_factor=0.5)),
+            "2048": AEModel(qmap_coder, GraceInterface({"path": f"{GRACE_MODEL}/2048_freeze.model"})),
+            #"4096": AEModel(qmap_coder, GraceInterface({"path": f"{GRACE_MODEL}/4096_freeze.model"})),
+            #"6144": AEModel(qmap_coder, GraceInterface({"path": f"{GRACE_MODEL}/6144_freeze.model"})),
+            #"8192": AEModel(qmap_coder, GraceInterface({"path": f"{GRACE_MODEL}/8192_freeze.model"})),
+            #"12288": AEModel(qmap_coder, GraceInterface({"path": f"{GRACE_MODEL}/12288_freeze.model"})),
+            #"16384": AEModel(qmap_coder, GraceInterface({"path": f"{GRACE_MODEL}/16384_freeze.model"})),
             }
 
     return models
@@ -886,5 +887,6 @@ def run_one_file(index_file, output_dir):
     return final_df
 
 def run_expr(index_file, output_folder):
+    global ec_model
     ec_model = init_ec_evaluator()
     run_one_file(index_file, output_folder)

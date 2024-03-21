@@ -1,3 +1,9 @@
+## Academic Software License: © 2023 UChicago (“Institution”).  Academic or nonprofit researchers are permitted to use this Software (as defined below) subject to Paragraphs 1-4:
+## 
+## Institution hereby grants to you free of charge, so long as you are an academic or nonprofit researcher, a nonexclusive license under Institution’s copyright ownership interest in this software and any derivative works made by you thereof (collectively, the “Software”) to use, copy, and make derivative works of the Software solely for educational or academic research purposes, in all cases subject to the terms of this Academic Software License. Except as granted herein, all rights are reserved by Institution, including the right to pursue patent protection of the Software.
+## Please note you are prohibited from further transferring the Software -- including any derivatives you make thereof -- to any person or entity. Failure by you to adhere to the requirements in Paragraphs 1 and 2 will result in immediate termination of the license granted to you pursuant to this Academic Software License effective as of the date you first used the Software.
+## IN NO EVENT SHALL INSTITUTION BE LIABLE TO ANY ENTITY OR PERSON FOR DIRECT, INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, INCLUDING LOST PROFITS, ARISING OUT OF THE USE OF THIS SOFTWARE, EVEN IF INSTITUTION HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. INSTITUTION SPECIFICALLY DISCLAIMS ANY AND ALL WARRANTIES, EXPRESS AND IMPLIED, INCLUDING, BUT NOT LIMITED TO, ANY IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. THE SOFTWARE IS PROVIDED “AS IS.” INSTITUTION HAS NO OBLIGATION TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS OF THIS SOFTWARE.
+
 import torch
 import math
 import time
@@ -8,7 +14,7 @@ from torchvision.utils import save_image
 from PIL import Image, ImageFile, ImageFilter
 import torchac
 
-class DVCModel:
+class GraceModel:
     """
     Fields in config:
         path: the path to the model
@@ -41,7 +47,7 @@ class DVCModel:
         self.model.float()
         self.use_half = False
 
-    def encode(self, image, refer_frame, return_z = False, mask=None):
+    def encode_separate(self, image, refer_frame, return_z = False, return_dec = False):
         """
         Parameter:
             image: torch.tensor with shape 3,h,w, fp32
@@ -66,23 +72,26 @@ class DVCModel:
 
         with torch.no_grad():
             if not return_z:
-                mv, res = self.model.encode(image, refer_frame, return_z = False)
+                mv, res, recon_frame = self.model.encode(image, refer_frame, return_z = False)
+                z = None
             else:
-                mv, res, z = self.model.encode(image, refer_frame, return_z = True)
+                mv, res, z, recon_frame = self.model.encode(image, refer_frame, return_z = True)
+        
+        if return_dec:
+            return mv, res, z, torch.squeeze(recon_frame)
+        else:
+            return mv, res, z
+
+    def encode(self, image, refer_frame, return_z = False):
+        mv, res, z = self.encode_separate(image, refer_frame, return_z, return_dec = False)
         shape_mv = mv.shape
         shape_res = res.shape
         code = torch.cat([torch.flatten(mv), torch.flatten(res)])
-        # torch.cuda.synchronize()
 
         if not return_z:
             return code, shape_mv, shape_res
         else:
             return code, shape_mv, shape_res, z
-
-    ''' custom z encoder by junchen '''
-    def encode_z(self, code_res, shape_res):
-        features = torch.reshape(code_res, shape_res)
-        return self.model.respriorEncoder(features)
 
     def decode(self, code, refer_frame, shape_mv, shape_res):
         """
@@ -94,69 +103,34 @@ class DVCModel:
         Returns:
             image: torch.tensor with shape (3, h, w)
         """
-        if self.use_half:
-            code = code.half()
-            refer_frame = refer_frame.half()
-        else:
-            code = code.float()
-            refer_frame = refer_frame.float()
-
         mvsize = np.prod(shape_mv)
         ressize = np.prod(shape_res)
         assert mvsize + ressize == torch.numel(code)
 
-        refer_frame = refer_frame[None, :].to(self.device)
         code = code.to(self.device)
         mv = torch.reshape(code[:mvsize], shape_mv)
         res = torch.reshape(code[mvsize:], shape_res)
 
-        with torch.no_grad():
-            out = self.model.decode(refer_frame, mv, res)
-        # torch.cuda.synchronize()
-        # if self.first_time:
-            # self.first_time = False
-            # self.model.compile_individual()
-        return torch.squeeze(out)
+        return self.decode_separate(mv, res, refer_frame)
 
-    def get_saliency(self, code, refer_frame, shape_mv, shape_res, orig_image):
+    def decode_separate(self, mv, res, refer_frame):
         """
-        Input:
-            code: 1-D torch tensor contains mv and residual
-            refer_frame: torch.tensor with shape 3,h,w
-            shape_mv: shape of motion_vec
-            shape_res: shape of residual
-            orig_image: original image, torch.tensor in 3,h,w shape, for MSE computation
-        Returns:
-            saliency_mv: sailency for motion vector, in shape_mv
-            saliency_res: sailency for residual, in shape_res
+        mv, res: shape is NCHW
+        refer_frame: shape is CHW (no N)
         """
-        mvsize = np.prod(shape_mv)
-        ressize = np.prod(shape_res)
-        assert mvsize + ressize == torch.numel(code)
+        if self.use_half:
+            mv = mv.half()
+            res = res.half()
+            refer_frame = refer_frame.half()
+        else:
+            mv = mv.float()
+            res = res.float()
+            refer_frame = refer_frame.float()
 
         refer_frame = refer_frame[None, :].to(self.device)
-        code = code.to(self.device).type(torch.float)
-        mv = torch.reshape(code[:mvsize], shape_mv)
-        res = torch.reshape(code[mvsize:], shape_res)
-
-        #import pdb
-        #pdb.set_trace()
-
-        ''' zero out the gradient '''
-        self.model.zero_grad()
-
-        ''' get output '''
-        mv.requires_grad_(True)
-        res.requires_grad_(True)
-        refer_frame.requires_grad_(False)
-        out = self.model.decode(refer_frame, mv, res)
-        out = torch.squeeze(out)
-
-        ''' compute loss '''
-        mse_loss = torch.mean((out - orig_image).pow(2))
-        mse_loss.backward()
-
-        return torch.squeeze(mv.grad), torch.squeeze(res.grad)
+        with torch.no_grad():
+            out = self.model.decode(refer_frame, mv, res)
+        return torch.squeeze(out)
 
 def _convert_to_int_and_normalize(cdf_float, needs_normalization):
     Lp = cdf_float.shape[-1]
@@ -188,9 +162,9 @@ def encode_float_cdf_with_repeat(cdf_float, sym, repeats, needs_normalization=Tr
 
 
 
-class DVCEntropyCoder:
-    def __init__(self, dvc_model: DVCModel):
-        self.model = dvc_model.model
+class GraceEntropyCoder:
+    def __init__(self, grace_model: GraceModel):
+        self.model = grace_model.model
         self.mv_cdfs = None
         self.mvshape = None
         self.z_cdfs = None
@@ -229,7 +203,7 @@ class DVCEntropyCoder:
         res = res + mxrange #self.model.mxrange
         n,c,h,w = res.shape
         #for i in range(-self.model.mxrange, self.model.mxrange):
-        for i in range(-mxrange, mxrange + 1):
+        for i in range(-mxrange, mxrange + 2):
             cdfs.append(gaussian.cdf(torch.tensor(i - 0.5)).view(n,c,h,w,1))
 
 
@@ -312,35 +286,6 @@ class DVCEntropyCoder:
             bs1, sz1 = self.compress_res(res, sigma)
             bs2, sz2 = self.compress_mv(mv)
             bs3, sz3 = self.compress_z(z)
-        return None, sz1 + sz2 + sz3
-
-    ''' custom size estimator by junchen '''
-    def entropy_encode_with_size(self, code, mvsize, ressize, z, use_estimation = False):
-        """
-        Parameter:
-            code: a 1-D torch tensor,
-                  equals to torch.cat([mv.flatten(), residual.flatten()])
-            size_mv: size of motion vec
-            size_res: size of residual
-        Returns:
-            bytestream: it is None
-            size: the size of the stream
-        """
-        assert mvsize + ressize == torch.numel(code)
-
-        mv = torch.reshape(code[:mvsize], shape_mv)
-        res = torch.reshape(code[mvsize:], shape_res)
-        sigma = self.model.respriorDecoder(z)
-
-        if use_estimation:
-            bs1, sz1 = self.estimate_res(res, sigma)
-            bs2, sz2 = self.estimate_mv(mv)
-            bs3, sz3 = self.estimate_z(z)
-        else:
-            bs1, sz1 = self.compress_res(res, sigma)
-            bs2, sz2 = self.compress_mv(mv)
-            bs3, sz3 = self.compress_z(z)
-        #print(sz1, sz2, sz3)
         return None, sz1 + sz2 + sz3
 
     def entropy_decode(self):

@@ -6,7 +6,6 @@ from .flowlib import read_flow, evaluate_flow
 
 # from warp import tf_warp
 import sys, os
-
 modelspath = "./models/other/"
 if not os.path.exists(modelspath):
     print("\033[31mPlease set the variable to the <ROOT_OF_THIS_REPO>/models/other/\033[0m")

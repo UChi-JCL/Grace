@@ -260,7 +260,7 @@ class VideoCompressor(nn.Module):
         return v * self.quantization_param
 
 
-    def encode(self, input_image, refer_frame, return_z = False, mask = None, scale_factor=1):
+    def encode(self, input_image, refer_frame, return_z = False, mask = None, scale_factor=1, return_dec = False):
         """
         Parameters: 
             input_image: image tensor, with shape: (N, C, H, W)
@@ -310,13 +310,17 @@ class VideoCompressor(nn.Module):
         #compressed_feature_renorm = torch.round(feature_renorm)
         compressed_feature_renorm = self.round_values(feature_renorm)
 
+        recon_residual = self.resDecoder(compressed_feature_renorm)
+        recon_frame = prediction + recon_residual
+        recon_frame = recon_frame.clamp(0, 1)
+
         if not return_z:
-            return quant_mv, compressed_feature_renorm
+            return quant_mv, compressed_feature_renorm, recon_frame
         else:
             z = self.respriorEncoder(compressed_feature_renorm)
             #z = self.respriorEncoder(feature_renorm)
             compressed_z = torch.round(z)
-            return quant_mv, compressed_feature_renorm, compressed_z
+            return quant_mv, compressed_feature_renorm, compressed_z, recon_frame
 
     def decode(self, refer_frame, motion_vec, residual, scale_factor=1):
         """
