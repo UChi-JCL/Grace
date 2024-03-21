@@ -1,0 +1,1 @@
+-e git+https://github.com/InterDigitalInc/CompressAI@45a0cd37db6589e1323d409226688038a3b33d7b#egg=compressai

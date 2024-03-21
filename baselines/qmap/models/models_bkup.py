@@ -1,0 +1,499 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import copy
+
+from .hyperpriors import ScaleHyperprior
+from .utils import conv
+from .layers import GDN1
+
+from .layers import SFT, SFTResblk, Conv2d, UpConv2d
+
+def initialize_weights(m):
+    if isinstance(m, nn.Conv2d):
+        nn.init.kaiming_uniform_(m.weight.data,nonlinearity='relu')
+        if m.bias is not None:
+            nn.init.constant_(m.bias.data, 0)
+    elif isinstance(m, nn.BatchNorm2d):
+        nn.init.constant_(m.weight.data, 1)
+        nn.init.constant_(m.bias.data, 0)
+    elif isinstance(m, nn.Linear):
+        nn.init.kaiming_uniform_(m.weight.data)
+        nn.init.constant_(m.bias.data, 0)
+
+
+class SpatiallyAdaptiveCompression(ScaleHyperprior):
+    def __init__(self, N=192, M=192, sft_ks=3, prior_nc=64, **kwargs):
+        super().__init__(N, M, **kwargs)
+        ### condition networks ###
+        # g_a,c
+        self.qmap_feature_g1 = nn.Sequential(
+            conv(4, prior_nc * 4, 3, 1),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc * 4, prior_nc * 2, 3, 1),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc * 2, prior_nc, 3, 1)
+        )
+        self.qmap_feature_g2 = nn.Sequential(
+            conv(prior_nc, prior_nc, 3),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc, prior_nc, 1, 1)
+        )
+        self.qmap_feature_g3 = nn.Sequential(
+            conv(prior_nc, prior_nc, 3),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc, prior_nc, 1, 1)
+        )
+        self.qmap_feature_g4 = nn.Sequential(
+            conv(prior_nc, prior_nc, 3),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc, prior_nc, 1, 1)
+        )
+        self.qmap_feature_g5 = nn.Sequential(
+            conv(prior_nc, prior_nc, 3),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc, prior_nc, 1, 1)
+        )
+
+        # h_a,c
+        self.qmap_feature_h1 = nn.Sequential(
+            conv(M + 1, prior_nc * 4, 3, 1),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc * 4, prior_nc * 2, 3, 1),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc * 2, prior_nc, 3, 1)
+        )
+        self.qmap_feature_h2 = nn.Sequential(
+            conv(prior_nc, prior_nc, 3),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc, prior_nc, 1, 1)
+        )
+        self.qmap_feature_h3 = nn.Sequential(
+            conv(prior_nc, prior_nc, 3),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc, prior_nc, 1, 1)
+        )
+
+        # f_c
+        self.qmap_feature_gs0 = nn.Sequential(
+            UpConv2d(N, N//2, 3),
+            nn.LeakyReLU(0.1, True),
+            UpConv2d(N//2, N//4),
+            nn.LeakyReLU(0.1, True),
+            conv(N//4, N//4, 3, 1)
+        )
+
+        # g_s,c
+        self.qmap_feature_gs1 = nn.Sequential(
+            conv(N + N // 4, prior_nc * 4, 3, 1),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc * 4, prior_nc * 2, 3, 1),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc * 2, prior_nc, 3, 1)
+        )
+        self.qmap_feature_gs2 = nn.Sequential(
+            UpConv2d(prior_nc, prior_nc, 3),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc, prior_nc, 1, 1)
+        )
+        self.qmap_feature_gs3 = nn.Sequential(
+            UpConv2d(prior_nc, prior_nc, 3),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc, prior_nc, 1, 1)
+        )
+        self.qmap_feature_gs4 = nn.Sequential(
+            UpConv2d(prior_nc, prior_nc, 3),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc, prior_nc, 1, 1)
+        )
+        self.qmap_feature_gs5 = nn.Sequential(
+            UpConv2d(prior_nc, prior_nc, 3),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc, prior_nc, 1, 1)
+        )
+
+        ### compression networks ###
+        # g_a, encoder
+        self.g_a = None
+        self.g_a0 = Conv2d(3, N//4, kernel_size=5, stride=1)
+        self.g_a1 = GDN1(N//4)
+        self.g_a2 = SFT(N // 4, prior_nc, ks=sft_ks)
+
+        self.g_a3 = Conv2d(N//4, N//2)
+        self.g_a4 = GDN1(N//2)
+        self.g_a5 = SFT(N // 2, prior_nc, ks=sft_ks)
+
+        self.g_a6 = Conv2d(N//2, N)
+        self.g_a7 = GDN1(N)
+        self.g_a8 = SFT(N, prior_nc, ks=sft_ks)
+
+        self.g_a9 = Conv2d(N, N)
+        self.g_a10 = GDN1(N)
+        self.g_a11 = SFT(N, prior_nc, ks=sft_ks)
+
+        self.g_a12 = Conv2d(N, M)
+        self.g_a13 = SFTResblk(M, prior_nc, ks=sft_ks)
+        self.g_a14 = SFTResblk(M, prior_nc, ks=sft_ks)
+
+        # h_a, hyper encoder
+        self.h_a = None
+        self.h_a0 = Conv2d(M, N, kernel_size=3, stride=1)
+        self.h_a1 = SFT(N, prior_nc, ks=sft_ks)
+        self.h_a2 = nn.LeakyReLU(inplace=True)
+
+        self.h_a3 = Conv2d(N, N)
+        self.h_a4 = SFT(N, prior_nc, ks=sft_ks)
+        self.h_a5 = nn.LeakyReLU(inplace=True)
+
+        self.h_a6 = Conv2d(N, N)
+        self.h_a7 = SFTResblk(N, prior_nc, ks=sft_ks)
+        self.h_a8 = SFTResblk(N, prior_nc, ks=sft_ks)
+
+        # g_s, decoder
+        self.g_s = None
+        self.g_s0 = SFTResblk(M, prior_nc, ks=sft_ks)
+        self.g_s1 = SFTResblk(M, prior_nc, ks=sft_ks)
+
+        self.g_s2 = UpConv2d(M, N)
+        self.g_s3 = GDN1(N, inverse=True)
+        self.g_s4 = SFT(N, prior_nc, ks=sft_ks)
+
+        self.g_s5 = UpConv2d(N, N)
+        self.g_s6 = GDN1(N, inverse=True)
+        self.g_s7 = SFT(N, prior_nc, ks=sft_ks)
+
+        self.g_s8 = UpConv2d(N, N // 2)
+        self.g_s9 = GDN1(N // 2, inverse=True)
+        self.g_s10 = SFT(N // 2, prior_nc, ks=sft_ks)
+
+        self.g_s11 = UpConv2d(N // 2, N // 4)
+        self.g_s12 = GDN1(N // 4, inverse=True)
+        self.g_s13 = SFT(N // 4, prior_nc, ks=sft_ks)
+
+        self.g_s14 = Conv2d(N // 4, 3, kernel_size=5, stride=1)
+
+        # h_s, hyper decoder
+        self.h_s = nn.Sequential(
+            UpConv2d(N, M),
+            nn.LeakyReLU(inplace=True),
+            UpConv2d(M, M * 3 // 2),
+            nn.LeakyReLU(inplace=True),
+            conv(M * 3 // 2, M * 2, stride=1, kernel_size=3),
+        )
+
+    def g_a(self, x, qmap):
+        qmap = self.qmap_feature_g1(torch.cat([qmap, x], dim=1))
+        x = self.g_a0(x)
+        x = self.g_a1(x)
+        x = self.g_a2(x, qmap)
+
+        qmap = self.qmap_feature_g2(qmap)
+        x = self.g_a3(x)
+        x = self.g_a4(x)
+        x = self.g_a5(x, qmap)
+
+        qmap = self.qmap_feature_g3(qmap)
+        x = self.g_a6(x)
+        x = self.g_a7(x)
+        x = self.g_a8(x, qmap)
+
+        qmap = self.qmap_feature_g4(qmap)
+        x = self.g_a9(x)
+        x = self.g_a10(x)
+        x = self.g_a11(x, qmap)
+
+        qmap = self.qmap_feature_g5(qmap)
+        x = self.g_a12(x)
+        x = self.g_a13(x, qmap)
+        x = self.g_a14(x, qmap)
+        return x
+
+    def h_a(self, x, qmap):
+        qmap = F.adaptive_avg_pool2d(qmap, x.size()[2:])
+        qmap = self.qmap_feature_h1(torch.cat([qmap, x], dim=1))
+        x = self.h_a0(x)
+        x = self.h_a1(x, qmap)
+        x = self.h_a2(x)
+
+        qmap = self.qmap_feature_h2(qmap)
+        x = self.h_a3(x)
+        x = self.h_a4(x, qmap)
+        x = self.h_a5(x)
+
+        qmap = self.qmap_feature_h3(qmap)
+        x = self.h_a6(x)
+        x = self.h_a7(x, qmap)
+        x = self.h_a8(x, qmap)
+        return x
+
+    def g_s(self, x, z):
+        w = self.qmap_feature_gs0(z)
+        w = self.qmap_feature_gs1(torch.cat([w, x], dim=1))
+        x = self.g_s0(x, w)
+        x = self.g_s1(x, w)
+
+        w = self.qmap_feature_gs2(w)
+        x = self.g_s2(x)
+        x = self.g_s3(x)
+        x = self.g_s4(x, w)
+
+        w = self.qmap_feature_gs3(w)
+        x = self.g_s5(x)
+        x = self.g_s6(x)
+        x = self.g_s7(x, w)
+
+        w = self.qmap_feature_gs4(w)
+        x = self.g_s8(x)
+        x = self.g_s9(x)
+        x = self.g_s10(x, w)
+
+        w = self.qmap_feature_gs5(w)
+        x = self.g_s11(x)
+        x = self.g_s12(x)
+        x = self.g_s13(x, w)
+
+        x = self.g_s14(x)
+        return x
+
+    def forward(self, x, qmap):
+        y = self.g_a(x, qmap)
+        z = self.h_a(y, qmap)
+        z_hat, z_likelihoods = self.entropy_bottleneck(z)
+
+        gaussian_params = self.h_s(z_hat)
+        scales_hat, means_hat = gaussian_params.chunk(2, 1)
+        y_hat, y_likelihoods = self.gaussian_conditional(y, scales_hat, means=means_hat)
+        x_hat = self.g_s(y_hat, z_hat)
+
+        return {
+            "x_hat": x_hat,
+            "likelihoods": {"y": y_likelihoods, "z": z_likelihoods},
+        }
+
+    def compress(self, x, qmap):
+        y = self.g_a(x, qmap)
+        z = self.h_a(y, qmap)
+
+        z_strings = self.entropy_bottleneck.compress(z)
+        z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
+
+        gaussian_params = self.h_s(z_hat)
+        scales_hat, means_hat = gaussian_params.chunk(2, 1)
+        indexes = self.gaussian_conditional.build_indexes(scales_hat)
+        y_strings = self.gaussian_conditional.compress(y, indexes, means=means_hat)
+        return {"strings": [y_strings, z_strings], "shape": z.size()[-2:]}
+
+    def decompress(self, strings, shape):
+        assert isinstance(strings, list) and len(strings) == 2
+        z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
+        gaussian_params = self.h_s(z_hat)
+        scales_hat, means_hat = gaussian_params.chunk(2, 1)
+        indexes = self.gaussian_conditional.build_indexes(scales_hat)
+        y_hat = self.gaussian_conditional.decompress(
+            strings[0], indexes, means=means_hat
+        )
+        x_hat = self.g_s(y_hat, z_hat).clamp_(0, 1)
+        return {"x_hat": x_hat}
+
+    def encode(self, x, qmap):
+        y = self.g_a(x, qmap)
+        z = self.h_a(y, qmap)
+
+        y_med = self.entropy_bottleneck._medians().detach().expand(y.size(0), -1, 1, 1)
+        z_med = self.entropy_bottleneck._medians().detach().expand(z.size(0), -1, 1, 1)
+
+        yq = self.entropy_bottleneck.quantize(y, "symbols", y_med)
+        zq = self.entropy_bottleneck.quantize(z, "symbols", z_med)
+        return {"strings": [yq, zq], "shape": z.size()[-2:]}
+
+    def decode(self, strings):
+        z_hat = strings[1]
+        y_hat = strings[0]
+
+        y_med = self.entropy_bottleneck._medians().detach().expand(y_hat.size(0), -1, 1, 1)
+        z_med = self.entropy_bottleneck._medians().detach().expand(z_hat.size(0), -1, 1, 1)
+
+        y_hatq = self.entropy_bottleneck.dequantize(y_hat, y_med)
+        z_hatq = self.entropy_bottleneck.dequantize(z_hat, z_med)
+
+        x_hat = self.g_s(y_hatq, z_hatq).clamp_(0, 1)
+        return {"x_hat": x_hat}
+
+class SpatiallyAdaptiveCompressionWrapper(ScaleHyperprior):
+    def __init__(self, basemodel: SpatiallyAdaptiveCompression, N = 192, M = 192, sft_ks = 3, prior_nc = 64, **kwargs):
+        super().__init__(N, M, **kwargs)
+        self.basemodel = basemodel
+
+        # qmap encoder
+        #self.qmap_feature_g_extra = copy.deepcopy(self.basemodel.qmap_feature_g4) 
+        self.qmap_feature_g_extra = nn.Sequential(
+            conv(prior_nc, prior_nc, 3),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc, prior_nc, 1, 1)
+        )
+
+        # qmap decoder
+        #self.qmap_feature_gs_extra = copy.deepcopy(self.basemodel.qmap_feature_gs2) 
+        self.qmap_feature_gs_extra = nn.Sequential(
+            UpConv2d(prior_nc, prior_nc, 3),
+            nn.LeakyReLU(0.1, True),
+            conv(prior_nc, prior_nc, 1, 1)
+        )
+
+        # encoder g_a
+        #self.g_a_e1 = copy.deepcopy(self.basemodel.g_a9) #Conv2d(N, N)
+        #self.g_a_e2 = copy.deepcopy(self.basemodel.g_a10) #GDN1(N)
+        #self.g_a_e3 = copy.deepcopy(self.basemodel.g_a11) #SFT(N, prior_nc, ks=sft_ks)
+        self.g_a_e1 = Conv2d(N, N)
+        self.g_a_e2 = GDN1(N)
+        self.g_a_e3 = SFT(N, prior_nc, ks=sft_ks)
+
+        # encoder g_s
+        #self.g_s_e1 = copy.deepcopy(self.basemodel.g_s2) #UpConv2d(N, N)
+        #self.g_s_e2 = copy.deepcopy(self.basemodel.g_s3) #GDN1(N, inverse=True)
+        #self.g_s_e3 = copy.deepcopy(self.basemodel.g_s4) #SFT(N, prior_nc, ks=sft_ks)
+        self.g_s_e1 = UpConv2d(N, N)
+        self.g_s_e2 = GDN1(N, inverse=True)
+        self.g_s_e3 = SFT(N, prior_nc, ks=sft_ks)
+
+        self.qmap_feature_g_extra.apply(initialize_weights)
+        self.qmap_feature_gs_extra.apply(initialize_weights)
+        self.g_a_e1.apply(initialize_weights)
+        self.g_a_e2.apply(initialize_weights)
+        self.g_a_e3.apply(initialize_weights)
+        self.g_s_e1.apply(initialize_weights)
+        self.g_s_e2.apply(initialize_weights)
+        self.g_s_e3.apply(initialize_weights)
+
+    def g_a(self, x, qmap):
+        qmap = self.basemodel.qmap_feature_g1(torch.cat([qmap, x], dim=1))
+        x = self.basemodel.g_a0(x)
+        x = self.basemodel.g_a1(x)
+        x = self.basemodel.g_a2(x, qmap)
+
+        qmap = self.basemodel.qmap_feature_g2(qmap)
+        x = self.basemodel.g_a3(x)
+        x = self.basemodel.g_a4(x)
+        x = self.basemodel.g_a5(x, qmap)
+
+        qmap = self.basemodel.qmap_feature_g3(qmap)
+        x = self.basemodel.g_a6(x)
+        x = self.basemodel.g_a7(x)
+        x = self.basemodel.g_a8(x, qmap)
+
+        qmap = self.basemodel.qmap_feature_g4(qmap)
+        x = self.basemodel.g_a9(x)
+        x = self.basemodel.g_a10(x)
+        x = self.basemodel.g_a11(x, qmap)
+
+        qmap = self.qmap_feature_g_extra(qmap)
+        x = self.g_a_e1(x)
+        x = self.g_a_e2(x)
+        x = self.g_a_e3(x, qmap)
+
+        qmap = self.basemodel.qmap_feature_g5(qmap)
+        x = self.basemodel.g_a12(x)
+        x = self.basemodel.g_a13(x, qmap)
+        x = self.basemodel.g_a14(x, qmap)
+        return x
+
+
+    def g_s(self, x, z):
+        w = self.basemodel.qmap_feature_gs0(z)
+        w = self.basemodel.qmap_feature_gs1(torch.cat([w, x], dim=1))
+        x = self.basemodel.g_s0(x, w)
+        x = self.basemodel.g_s1(x, w)
+
+        w = self.qmap_feature_gs_extra(w)
+        x = self.g_s_e1(x)
+        x = self.g_s_e2(x)
+        x = self.g_s_e3(x, w)
+
+        w = self.basemodel.qmap_feature_gs2(w)
+        x = self.basemodel.g_s2(x)
+        x = self.basemodel.g_s3(x)
+        x = self.basemodel.g_s4(x, w)
+
+        w = self.basemodel.qmap_feature_gs3(w)
+        x = self.basemodel.g_s5(x)
+        x = self.basemodel.g_s6(x)
+        x = self.basemodel.g_s7(x, w)
+
+        w = self.basemodel.qmap_feature_gs4(w)
+        x = self.basemodel.g_s8(x)
+        x = self.basemodel.g_s9(x)
+        x = self.basemodel.g_s10(x, w)
+
+        w = self.basemodel.qmap_feature_gs5(w)
+        x = self.basemodel.g_s11(x)
+        x = self.basemodel.g_s12(x)
+        x = self.basemodel.g_s13(x, w)
+
+        x = self.basemodel.g_s14(x)
+        return x
+
+    def forward(self, x, qmap):
+        #y = self.g_a(x, qmap)
+        y = self.basemodel.g_a(x, qmap)
+        z = self.basemodel.h_a(y, qmap)
+        z_hat, z_likelihoods = self.basemodel.entropy_bottleneck(z)
+
+        gaussian_params = self.basemodel.h_s(z_hat)
+        scales_hat, means_hat = gaussian_params.chunk(2, 1)
+        y_hat, y_likelihoods = self.basemodel.gaussian_conditional(y, scales_hat, means=means_hat)
+        #x_hat = self.g_s(y_hat, z_hat)
+        x_hat = self.basemodel.g_s(y_hat, z_hat)
+
+        return {
+            "x_hat": x_hat,
+            "likelihoods": {"y": y_likelihoods, "z": z_likelihoods},
+        }
+
+    def compress(self, x, qmap):
+        y = self.g_a(x, qmap)
+        z = self.basemodel.h_a(y, qmap)
+
+        z_strings = self.basemodel.entropy_bottleneck.compress(z)
+        z_hat = self.basemodel.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
+
+        gaussian_params = self.basemodel.h_s(z_hat)
+        scales_hat, means_hat = gaussian_params.chunk(2, 1)
+        indexes = self.basemodel.gaussian_conditional.build_indexes(scales_hat)
+        y_strings = self.basemodel.gaussian_conditional.compress(y, indexes, means=means_hat)
+        return {"strings": [y_strings, z_strings], "shape": z.size()[-2:]}
+
+    def decompress(self, strings, shape):
+        assert isinstance(strings, list) and len(strings) == 2
+        z_hat = self.basemodel.entropy_bottleneck.decompress(strings[1], shape)
+        gaussian_params = self.basemodel.h_s(z_hat)
+        scales_hat, means_hat = gaussian_params.chunk(2, 1)
+        indexes = self.basemodel.gaussian_conditional.build_indexes(scales_hat)
+        y_hat = self.basemodel.gaussian_conditional.decompress(
+            strings[0], indexes, means=means_hat
+        )
+        x_hat = self.g_s(y_hat, z_hat).clamp_(0, 1)
+        return {"x_hat": x_hat}
+
+    def encode(self, x, qmap):
+        y = self.g_a(x, qmap)
+        z = self.basemodel.h_a(y, qmap)
+
+        y_med = self.basemodel.entropy_bottleneck._medians().detach().expand(y.size(0), -1, 1, 1)
+        z_med = self.basemodel.entropy_bottleneck._medians().detach().expand(z.size(0), -1, 1, 1)
+
+        yq = self.basemodel.entropy_bottleneck.quantize(y, "symbols", y_med)
+        zq = self.basemodel.entropy_bottleneck.quantize(z, "symbols", z_med)
+        return {"strings": [yq, zq], "shape": z.size()[-2:]}
+
+    def decode(self, strings):
+        z_hat = strings[1]
+        y_hat = strings[0]
+
+        y_med = self.basemodel.entropy_bottleneck._medians().detach().expand(y_hat.size(0), -1, 1, 1)
+        z_med = self.basemodel.entropy_bottleneck._medians().detach().expand(z_hat.size(0), -1, 1, 1)
+
+        y_hatq = self.basemodel.entropy_bottleneck.dequantize(y_hat, y_med)
+        z_hatq = self.basemodel.entropy_bottleneck.dequantize(z_hat, z_med)
+
+        x_hat = self.g_s(y_hatq, z_hatq).clamp_(0, 1)
+        return {"x_hat": x_hat}
