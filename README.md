@@ -28,6 +28,7 @@ conda env create -f env.yml # creating the conda environment
 ## Download the model and the test videos
 
 The testing videos can be downloaded at: https://drive.google.com/file/d/1iQhTfb7Kew_z97kDVoj2vOmQqaNjBK9J/view?usp=sharing
+The models for Grace can be downloaded at: https://drive.google.com/file/d/1IWD-VUc0RPXXhBzoH5j9YD6bl8kzYYJ1/view?usp=sharing
 
 ```bash
 # download the models
