@@ -12,8 +12,8 @@ Additionally, please note that the content within the following specific subfold
 **Note: you need to have `git` and `conda` before installation**
 ```bash
 # clone the repo
-git clone git@github.com:ApostaC/Grace-simulation.git # clone the repo
-cd Grace-simulation
+git clone https://github.com/UChi-JCL/Grace # clone the repo
+cd Grace
 
 # install the dependencies
 sudo apt install ffmpeg ninja-build # install the ffmpeg and ninja
