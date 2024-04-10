@@ -1,7 +1,7 @@
 import torch
 import numpy as np
-import qmap.models.models as models
-import qmap.models.models_4x as models4x
+import baselines.qmap.models.models as models
+import baselines.qmap.models.models_4x as models4x
 import time
 
 from .utils import load_checkpoint
