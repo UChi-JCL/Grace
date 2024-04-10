@@ -4,7 +4,6 @@ import warnings
 warnings.simplefilter("ignore")
 warnings.filterwarnings("ignore")
 
-from qmap.qmap_model import QmapModel
 import ctypes
 import copy
 import json
@@ -361,7 +360,7 @@ def set_hw_step(h, w):
     return h // m, w // n
 
 class AEModel:
-    def __init__(self, qmap_coder: QmapModel, grace_coder: GraceInterface, only_P=True):
+    def __init__(self, qmap_coder, grace_coder: GraceInterface, only_P=True):
         self.qmap_coder = qmap_coder
         self.grace_coder = grace_coder
 
@@ -618,7 +617,7 @@ def init_ae_model(qmap_quality=1):
             "path": "models/qmap/qmap_pretrained.pt",
             "quality": qmap_quality,
         }
-    qmap_coder = QmapModel(qmap_config_template)
+    qmap_coder = None
 
 
     PRETRAIN_PREFIX = "models/pretrained"
