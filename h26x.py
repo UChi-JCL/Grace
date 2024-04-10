@@ -326,5 +326,5 @@ if __name__ == "__main__":
     if mp.get_start_method(allow_none=True) is None:
         mp.set_start_method('spawn', force=True)
     
-    run_one_file("INDEX_FINAL.txt", "results/h265", "265")
-    run_one_file("INDEX_FINAL.txt", "results/h264", "264")
+    run_one_file("INDEX.txt", "results/h265", "265")
+    run_one_file("INDEX.txt", "results/h264", "264")
