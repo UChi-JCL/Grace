@@ -345,10 +345,6 @@ class EncodedFrame:
         """
         default block size is 100
         """
-        torch.manual_seed(0)
-        random.seed(0)
-        np.random.seed(0)
-
         leng = torch.numel(self.code)
         nblocks = (leng - 1) // blocksize + 1
 
@@ -687,7 +683,7 @@ def gen_loss_mask(tframe, loss_rate, blocksize = 64, random_seed=0):
     tframe: (c, h, w) torch tensor
     """
     c, h, w = tframe.shape
-    torch.random.manual_seed(random_seed)
+    #torch.random.manual_seed(random_seed)
     arr = (torch.rand(h // blocksize + 1, w // blocksize + 1) < loss_rate).long()
     arr = torch.repeat_interleave(arr, blocksize, axis=1)
     arr = torch.repeat_interleave(arr, blocksize, axis=0)

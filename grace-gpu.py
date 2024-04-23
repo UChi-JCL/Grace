@@ -302,10 +302,6 @@ class EncodedFrame:
         """
         default block size is 100
         """
-        torch.manual_seed(0)
-        random.seed(0)
-        np.random.seed(0)
-
         leng = torch.numel(self.code)
         nblocks = (leng - 1) // blocksize + 1
 
