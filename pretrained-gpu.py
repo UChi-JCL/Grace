@@ -820,4 +820,4 @@ def run_one_file(index_file, output_dir):
     final_df.to_csv(f"{output_dir}/all.csv", index=None)
     return final_df
 
-run_one_file("INDEX_FINAL.txt", "results/pretrained")
+run_one_file("INDEX.txt", "results/pretrained")

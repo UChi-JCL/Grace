@@ -4,7 +4,7 @@ import warnings
 warnings.simplefilter("ignore")
 warnings.filterwarnings("ignore")
 
-from qmap.qmap_model import QmapModel
+from baselines.qmap.qmap_model import QmapModel
 import ctypes
 import copy
 import json
